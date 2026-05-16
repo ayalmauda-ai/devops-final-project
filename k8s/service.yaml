@@ -1,0 +1,30 @@
+# Headless service — gives each StatefulSet pod a stable DNS name
+# Pod DNS format: engine-0.engine-svc.default.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: engine-svc
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    app: engine
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# Regular service — for internal cluster access to the engine
+apiVersion: v1
+kind: Service
+metadata:
+  name: engine-external
+  namespace: default
+spec:
+  selector:
+    app: engine
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
