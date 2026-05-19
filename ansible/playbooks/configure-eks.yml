@@ -1,0 +1,115 @@
+---
+# ansible/playbooks/configure-eks.yml
+#
+# Purpose: configure the EKS cluster that Terraform just created.
+#
+# This playbook is called by the CD pipeline (Phase 9) AFTER `terraform apply`
+# succeeds. It does three things:
+#   1. Reads the cluster name and region from Terraform's outputs (no hard-coding)
+#   2. Updates the kubeconfig so kubectl knows which cluster to talk to
+#   3. Installs ingress-nginx — the load-balancer controller that exposes
+#      the app to the internet via the NLB that AWS provisions automatically
+#
+# Run manually (after terraform apply):
+#   cd ansible
+#   ansible-playbook playbooks/configure-eks.yml
+#
+# Run from CI with explicit vars (no terraform lookup needed):
+#   ansible-playbook playbooks/configure-eks.yml \
+#     -e "cluster_name=devops-final-eks aws_region=us-east-1"
+
+- name: Configure EKS cluster post-Terraform
+  hosts: local
+  connection: local
+  gather_facts: false
+
+  # ── Variable resolution ────────────────────────────────────────────────────
+  # Try Terraform outputs first. If you pass -e vars on the CLI, those take
+  # precedence because Ansible evaluates extra vars last (highest priority).
+  vars:
+    terraform_dir: "{{ playbook_dir }}/../../terraform"
+    aws_region: >-
+      {{ lookup('pipe', 'terraform -chdir=' + terraform_dir + ' output -raw region 2>/dev/null || echo us-east-1') | trim }}
+    cluster_name: >-
+      {{ lookup('pipe', 'terraform -chdir=' + terraform_dir + ' output -raw cluster_name 2>/dev/null || echo devops-final-eks') | trim }}
+    ingress_nginx_version: "4.11.3"   # pin chart version for reproducibility
+
+  tasks:
+
+    # ── Step 1: kubeconfig ───────────────────────────────────────────────────
+    - name: Show which cluster we are configuring
+      debug:
+        msg: "Configuring EKS cluster '{{ cluster_name }}' in region '{{ aws_region }}'"
+
+    - name: Update kubeconfig for the EKS cluster
+      # This writes (or updates) the ~/.kube/config entry for this cluster so
+      # that every subsequent kubectl / helm command in this playbook talks to
+      # the right place.
+      command: >
+        aws eks update-kubeconfig
+          --region {{ aws_region }}
+          --name   {{ cluster_name }}
+      register: kubeconfig_result
+      changed_when: "'Added new context' in kubeconfig_result.stdout or
+                     'Updated context'   in kubeconfig_result.stdout"
+
+    - name: Verify cluster is reachable
+      command: kubectl cluster-info
+      changed_when: false
+      retries: 5
+      delay: 15
+      register: cluster_info
+      until: cluster_info.rc == 0
+
+    # ── Step 2: ingress-nginx ────────────────────────────────────────────────
+    # ingress-nginx is the Kubernetes ingress controller. When you apply an
+    # Ingress manifest (k8s/ingress.yaml), ingress-nginx sees it and tells
+    # AWS to create a Network Load Balancer that routes external traffic to
+    # your pods. Without this, the Ingress manifests are ignored.
+
+    - name: Add ingress-nginx Helm repository
+      command: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+      changed_when: false
+      failed_when: false   # harmless if already added
+
+    - name: Update Helm repositories
+      command: helm repo update
+      changed_when: false
+
+    - name: Create ingress-nginx namespace
+      command: kubectl create namespace ingress-nginx
+      register: ns_result
+      changed_when: ns_result.rc == 0
+      failed_when: ns_result.rc != 0 and 'already exists' not in ns_result.stderr
+
+    - name: Install / upgrade ingress-nginx
+      # `helm upgrade --install` is idempotent: installs on first run, upgrades
+      # on subsequent runs. --wait blocks until all pods are Ready so the
+      # playbook only succeeds when ingress is genuinely healthy.
+      command: >
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx
+          --namespace  ingress-nginx
+          --version    {{ ingress_nginx_version }}
+          --set controller.service.type=LoadBalancer
+          --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"=nlb
+          --wait
+          --timeout 5m
+      register: helm_result
+      changed_when: "'has been upgraded' in helm_result.stdout or
+                     'has been deployed' in helm_result.stdout"
+
+    - name: Show ingress-nginx load balancer hostname
+      # This is the public hostname you put in DNS (or use directly for testing).
+      # It takes a minute or two after `helm install` for AWS to assign it.
+      command: >
+        kubectl get svc ingress-nginx-controller
+          --namespace ingress-nginx
+          --output jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+      register: lb_hostname
+      changed_when: false
+      failed_when: false
+
+    - name: Print load balancer hostname
+      debug:
+        msg: >-
+          Ingress NLB hostname: {{ lb_hostname.stdout | default('(not assigned yet — wait 60s and check again)') }}
