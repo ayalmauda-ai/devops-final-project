@@ -1,0 +1,154 @@
+// =============================================================================
+// Jenkinsfile.engine-ci — CI pipeline for the seyoawe engine
+// =============================================================================
+//
+// Triggers on changes to: engine/**, docker/engine.Dockerfile, VERSION
+//
+// Pipeline:
+//   1. Checkout
+//   2. Detect changes (shared script) — skip if engine not affected
+//   3. Read VERSION (single source of truth)
+//   4. Lint modules (engine modules are Python; binary core is not lintable)
+//   5. Test (integration: TCP probe on running container)
+//   6. Build engine Docker image with semver build-arg
+//   7. Smoke test: boot image, verify port 8080 accepts TCP connections
+//   8. Push image to Docker Hub with three tags: <version>, <version>-<sha>, latest
+//   9. Bump VERSION (only on main, only if not already bumped manually)
+//
+// Version coupling contract:
+//   - Reads VERSION; never writes to it except via the bumper script
+//   - The bumper script defends against double-bump, infinite-loop, race
+//
+// Why TCP probe instead of HTTP /health?
+//   The engine binary is closed-source and only exposes POST /api/<customer>/<workflow>.
+//   It has no GET /health endpoint. TCP probe on :8080 is the correct,
+//   standards-aligned approach (used by Postgres/Redis/MongoDB containers etc).
+// =============================================================================
+
+pipeline {
+  agent { label 'docker' }
+
+  options {
+    timestamps()
+    timeout(time: 30, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    disableConcurrentBuilds()        // serialize main-branch builds; prevents bump race
+  }
+
+  environment {
+    DOCKERHUB  = credentials('dockerhub-ayalm')      // user/pass credential
+    IMAGE_REPO = "ayalm/seyoawe-engine"
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Detect changes') {
+      steps {
+        script {
+          def rc = sh(returnStatus: true,
+                      script: 'bash jenkins/shared/detect-changes.sh engine')
+          if (rc == 1) {
+            currentBuild.result = 'NOT_BUILT'
+            error('No engine-relevant changes — skipping pipeline.')
+          } else if (rc != 0) {
+            error("detect-changes.sh failed with exit code ${rc}")
+          }
+        }
+      }
+    }
+
+    stage('Read VERSION') {
+      steps {
+        script {
+          env.APP_VERSION = readFile('VERSION').trim()
+          env.GIT_SHA = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+          echo "Building engine ${env.APP_VERSION} from ${env.GIT_SHA}"
+        }
+      }
+    }
+
+    stage('Lint engine modules') {
+      steps {
+        sh '''
+          python3 -m pip install --quiet --user ruff==0.5.5
+          ~/.local/bin/ruff check engine/modules/ || echo "Lint produced warnings (not failing build)"
+        '''
+      }
+    }
+
+    stage('Build engine image') {
+      steps {
+        sh """
+          docker build -f docker/engine.Dockerfile \\
+            --build-arg APP_VERSION=${APP_VERSION} \\
+            -t ${IMAGE_REPO}:${APP_VERSION} \\
+            -t ${IMAGE_REPO}:${APP_VERSION}-${GIT_SHA} \\
+            -t ${IMAGE_REPO}:latest .
+        """
+      }
+    }
+
+    stage('Smoke test image') {
+      steps {
+        sh """
+          # Boot the just-built image and verify port 8080 accepts TCP.
+          # Engine has no /health endpoint, so TCP probe is the canonical check.
+          docker rm -f engine-smoke 2>/dev/null || true
+          docker run -d --name engine-smoke -p 18080:8080 ${IMAGE_REPO}:${APP_VERSION}
+
+          echo "Waiting up to 30s for engine to listen on :8080..."
+          for i in \$(seq 1 30); do
+            if timeout 2 bash -c 'cat < /dev/tcp/localhost/18080' 2>/dev/null; then
+              echo "Engine TCP probe PASS (took \${i}s)"
+              docker rm -f engine-smoke
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Engine TCP probe FAILED — dumping logs:"
+          docker logs engine-smoke
+          docker rm -f engine-smoke
+          exit 1
+        """
+      }
+    }
+
+    stage('Push image') {
+      steps {
+        sh '''
+          echo "$DOCKERHUB_PSW" | docker login -u "$DOCKERHUB_USR" --password-stdin
+          docker push --all-tags $IMAGE_REPO
+        '''
+      }
+    }
+
+    stage('Bump VERSION') {
+      when { branch 'main' }
+      steps {
+        sshagent(['github-ssh-key']) {
+          sh 'bash jenkins/shared/bump-version.sh'
+        }
+      }
+    }
+  }
+
+  post {
+    failure {
+      emailext subject: "FAIL: ${env.JOB_NAME} #${env.BUILD_NUMBER} (engine)",
+               body: "Engine CI failed at ${env.BUILD_URL}\nVersion: ${env.APP_VERSION ?: 'unknown'}",
+               to: 'ayal.mauda@gmail.com'
+      // Optional: reuse Jira ticket creation from Lesson 47 here
+    }
+    success {
+      echo "Engine ${env.APP_VERSION} successfully built, smoke-tested, and published."
+    }
+    always {
+      sh 'docker rm -f engine-smoke 2>/dev/null || true'
+    }
+  }
+}

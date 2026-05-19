@@ -1,0 +1,158 @@
+// =============================================================================
+// Jenkinsfile.cli-ci — CI pipeline for the sawectl CLI
+// =============================================================================
+//
+// Triggers on changes to: cli/**, docker/cli.Dockerfile, VERSION
+//
+// Pipeline:
+//   1. Checkout
+//   2. Detect changes (shared script) — skip if CLI not affected
+//   3. Read VERSION (same file engine-ci reads — shared semver)
+//   4. Lint + unit test sawectl.py with coverage
+//   5. Build pip wheel
+//   6. Build CLI Docker image
+//   7. Push Docker image to Docker Hub
+//   8. Publish wheel as a GitHub Release (main branch only)
+//
+// Version coupling contract:
+//   - This pipeline READS VERSION but never writes to it.
+//   - Only engine-ci's bump-version.sh writes VERSION.
+//   - When engine-ci bumps VERSION, that commit triggers BOTH pipelines on the
+//     next run, ensuring Docker Hub always has both images at the same tag.
+// =============================================================================
+
+pipeline {
+  agent { label 'docker' }
+
+  options {
+    timestamps()
+    timeout(time: 20, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    disableConcurrentBuilds()
+  }
+
+  environment {
+    DOCKERHUB  = credentials('dockerhub-ayalm')
+    GITHUB     = credentials('github-token-ayalmauda-ai')
+    IMAGE_REPO = "ayalm/seyoawe-cli"
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Detect changes') {
+      steps {
+        script {
+          def rc = sh(returnStatus: true,
+                      script: 'bash jenkins/shared/detect-changes.sh cli')
+          if (rc == 1) {
+            currentBuild.result = 'NOT_BUILT'
+            error('No CLI-relevant changes — skipping pipeline.')
+          } else if (rc != 0) {
+            error("detect-changes.sh failed with exit code ${rc}")
+          }
+        }
+      }
+    }
+
+    stage('Read VERSION') {
+      steps {
+        script {
+          env.APP_VERSION = readFile('VERSION').trim()
+          env.GIT_SHA = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+          echo "Building CLI ${env.APP_VERSION} from ${env.GIT_SHA}"
+        }
+      }
+    }
+
+    stage('Lint + Test CLI') {
+      steps {
+        sh '''
+          python3 -m pip install --quiet --user \
+            ruff==0.5.5 pytest pytest-cov pyyaml jsonschema requests
+          export PATH="$HOME/.local/bin:$PATH"
+
+          cd cli
+          ruff check . || echo "Lint produced warnings (not failing build)"
+          pytest tests/ --cov=. --cov-report=term \
+                 --junitxml=../reports/cli-tests.xml
+        '''
+      }
+      post {
+        always {
+          junit allowEmptyResults: true, testResults: 'reports/cli-tests.xml'
+        }
+      }
+    }
+
+    stage('Build wheel') {
+      steps {
+        sh '''
+          python3 -m pip install --quiet --user build
+          export PATH="$HOME/.local/bin:$PATH"
+          cd cli
+          python3 -m build --wheel --outdir dist
+          ls -la dist/
+        '''
+        archiveArtifacts artifacts: 'cli/dist/*.whl', fingerprint: true
+      }
+    }
+
+    stage('Build CLI Docker image') {
+      steps {
+        sh """
+          docker build -f docker/cli.Dockerfile \\
+            --build-arg APP_VERSION=${APP_VERSION} \\
+            -t ${IMAGE_REPO}:${APP_VERSION} \\
+            -t ${IMAGE_REPO}:${APP_VERSION}-${GIT_SHA} \\
+            -t ${IMAGE_REPO}:latest .
+        """
+      }
+    }
+
+    stage('Push CLI image') {
+      steps {
+        sh '''
+          echo "$DOCKERHUB_PSW" | docker login -u "$DOCKERHUB_USR" --password-stdin
+          docker push --all-tags $IMAGE_REPO
+        '''
+      }
+    }
+
+    stage('Publish GitHub Release') {
+      when { branch 'main' }
+      steps {
+        sh '''
+          # Idempotent: if release already exists for this VERSION, skip cleanly.
+          if gh release view "cli-v$APP_VERSION" >/dev/null 2>&1; then
+            echo "Release cli-v$APP_VERSION already exists — skipping"
+          else
+            echo "$GITHUB_PSW" | gh auth login --with-token
+            gh release create "cli-v$APP_VERSION" cli/dist/*.whl \
+              --title "CLI $APP_VERSION" \
+              --notes "Auto-published from $GIT_SHA. Engine pair: ayalm/seyoawe-engine:$APP_VERSION"
+          fi
+        '''
+      }
+    }
+
+    // ===========================================================================
+    // INTENTIONAL: this pipeline does NOT bump VERSION.
+    // The version-coupling contract specifies ONE writer (engine-ci/bump-version.sh).
+    // ===========================================================================
+  }
+
+  post {
+    failure {
+      emailext subject: "FAIL: ${env.JOB_NAME} #${env.BUILD_NUMBER} (cli)",
+               body: "CLI CI failed at ${env.BUILD_URL}\nVersion: ${env.APP_VERSION ?: 'unknown'}",
+               to: 'ayal.mauda@gmail.com'
+    }
+    success {
+      echo "CLI ${env.APP_VERSION} successfully built, tested, and published."
+    }
+  }
+}
