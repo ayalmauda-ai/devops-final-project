@@ -1,0 +1,47 @@
+# cli/pyproject.toml
+#
+# Makes the CLI installable as a Python package so the Jenkinsfile can build a
+# distributable wheel with: cd cli && python3 -m build --wheel
+#
+# The resulting file (dist/sawectl-X.Y.Z-py3-none-any.whl) is uploaded to GitHub
+# Releases by the cli-ci pipeline so end-users can install it with:
+#   pip install sawectl-1.0.0-py3-none-any.whl
+#
+# Package layout (flat layout — single script, no sub-packages):
+#   cli/
+#   ├── pyproject.toml        ← this file
+#   └── sawectl/
+#       ├── sawectl.py        ← the actual script, treated as a py-module
+#       └── *.json, *.txt     ← schema files and requirements
+
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name            = "sawectl"
+version         = "1.0.0"
+description     = "Seyoawe workflow CLI tool"
+readme          = "sawectl/README.md"
+requires-python = ">=3.8"
+license         = { file = "sawectl/LICENSE/LICENSE.md" }
+dependencies    = [
+    "pyyaml",
+    "jsonschema",
+    "requests",
+]
+
+# Expose `sawectl` as a command-line entry point after installation.
+# After `pip install sawectl-*.whl`, typing `sawectl` invokes main() directly.
+[project.scripts]
+sawectl = "sawectl:main"
+
+# Tell setuptools where to find the source.
+# "" means the root package, "sawectl" means look inside the sawectl/ subdirectory.
+[tool.setuptools]
+package-dir    = { "" = "sawectl" }
+py-modules     = ["sawectl"]
+
+# Include the JSON schema files in the wheel (they are loaded at runtime).
+[tool.setuptools.package-data]
+"*" = ["*.json"]
