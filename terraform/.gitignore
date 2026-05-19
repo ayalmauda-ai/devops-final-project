@@ -1,7 +1,7 @@
 *.tfstate
 *.tfstate.*
 .terraform/
-.terraform.lock.hcl
+# .terraform.lock.hcl is committed intentionally (pinned provider versions)
 terraform.tfvars
 *.tfvars
 crash.log
