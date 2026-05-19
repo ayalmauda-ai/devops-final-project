@@ -1,0 +1,151 @@
+// jenkins/Jenkinsfile.cd
+//
+// CD pipeline — ALWAYS THREE SEQUENTIAL STAGES, NEVER PARALLEL:
+//
+//   Stage 1: Terraform Apply   → creates / updates AWS infrastructure
+//   Stage 2: Ansible Configure → configures the cluster (kubeconfig, ingress-nginx)
+//   Stage 3: kubectl Deploy    → deploys the versioned app manifests
+//
+// Why sequential and never parallel?
+//   Terraform must finish before Ansible — Ansible connects to the EKS cluster,
+//   which must exist before that connection can succeed.
+//   Ansible must finish before kubectl — the Ingress manifest (k8s/ingress.yaml)
+//   only works after ingress-nginx is installed. If kubectl runs first, the
+//   Ingress resource is created but permanently ignored.
+//
+// Triggered by: the engine-ci pipeline after a successful push to Docker Hub,
+// OR manually from the Jenkins "Build Now" button.
+//
+// Required Jenkins credentials (configure in Manage Jenkins → Credentials):
+//   aws-credentials  → AWS access key + secret (type: Amazon Web Services)
+//                      IAM user: jenkins-deploy, policy: EKS + EC2 + VPC + IAM
+
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 60, unit: 'MINUTES')   // EKS can take 15-20 min on first apply
+    }
+
+    environment {
+        AWS_REGION   = "us-east-1"
+        CLUSTER_NAME = "devops-final-eks"
+    }
+
+    stages {
+
+        // ── Preparation ──────────────────────────────────────────────────────
+        stage('Read Version') {
+            steps {
+                script {
+                    env.VERSION = sh(
+                        script: 'cat VERSION | tr -d "[:space:]"',
+                        returnStdout: true
+                    ).trim()
+                    echo "Deploying version: ${env.VERSION}"
+                }
+            }
+        }
+
+        // ── Stage 1: Terraform ───────────────────────────────────────────────
+        // Creates VPC + EKS cluster + node group if they don't exist yet.
+        // On subsequent deploys the cluster already exists — Terraform detects
+        // no diff and completes in seconds. `-auto-approve` is safe in CI
+        // because you WANT it to apply without a human prompt.
+        stage('Terraform Apply') {
+            steps {
+                withCredentials([[
+                    $class:            'AmazonWebServicesCredentialsBinding',
+                    credentialsId:     'aws-credentials',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    dir('terraform') {
+                        sh '''
+                            terraform init
+                            terraform apply -auto-approve
+                        '''
+                    }
+                }
+            }
+        }
+
+        // ── Stage 2: Ansible ─────────────────────────────────────────────────
+        // Runs AFTER Terraform so the cluster is guaranteed to exist.
+        // The playbook: (a) updates kubeconfig, (b) installs / upgrades ingress-nginx.
+        // `helm upgrade --install` inside the playbook is idempotent — safe to
+        // run on every deploy even if ingress-nginx is already installed.
+        stage('Ansible Configure') {
+            steps {
+                withCredentials([[
+                    $class:            'AmazonWebServicesCredentialsBinding',
+                    credentialsId:     'aws-credentials',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    dir('ansible') {
+                        sh 'ansible-playbook playbooks/configure-eks.yml'
+                    }
+                }
+            }
+        }
+
+        // ── Stage 3: kubectl Deploy ──────────────────────────────────────────
+        // Runs AFTER Ansible so ingress-nginx is in place to handle the Ingress
+        // resource. Without ingress-nginx, kubectl apply succeeds but the
+        // Ingress is silently ignored — nothing becomes publicly reachable.
+        stage('Deploy to EKS') {
+            steps {
+                withCredentials([[
+                    $class:            'AmazonWebServicesCredentialsBinding',
+                    credentialsId:     'aws-credentials',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh '''
+                        # Point kubectl at the right cluster.
+                        # Ansible already did this, but we redo it here in case
+                        # this stage runs on a different Jenkins executor node
+                        # that has a fresh home directory.
+                        aws eks update-kubeconfig \
+                            --region "${AWS_REGION}" \
+                            --name   "${CLUSTER_NAME}"
+
+                        # Inject the exact image version into the StatefulSet manifest
+                        # before applying. The sed command replaces whatever tag is
+                        # currently in the file (e.g. :1.0.0) with the version that
+                        # engine-ci just built and pushed to Docker Hub.
+                        sed "s|ayalm/engine:.*|ayalm/engine:${VERSION}|g" k8s/statefulset.yaml \
+                            | kubectl apply -f -
+
+                        # The remaining manifests are version-independent; apply as-is.
+                        kubectl apply -f k8s/service.yaml
+                        kubectl apply -f k8s/configmap.yaml
+                        kubectl apply -f k8s/ingress.yaml
+
+                        # Block until the StatefulSet's pods are Running + Ready.
+                        # If this takes longer than 5 minutes, something is wrong
+                        # (bad image, OOMKilled, probe failure) — check the logs.
+                        kubectl rollout status statefulset/engine --timeout=5m
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment of v${env.VERSION} to EKS succeeded."
+        }
+        failure {
+            echo "CD pipeline FAILED — check the stage that failed above."
+            echo "To roll back to the previous version: kubectl rollout undo statefulset/engine"
+        }
+        always {
+            // Print pod status after every run (success or failure) for visibility.
+            sh 'kubectl get pods -o wide --field-selector metadata.namespace!=kube-system || true'
+        }
+    }
+}
