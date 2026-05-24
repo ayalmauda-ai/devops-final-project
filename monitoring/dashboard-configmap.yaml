@@ -1,0 +1,247 @@
+---
+# monitoring/dashboard-configmap.yaml
+# Grafana dashboard for the seyoawe engine (Phase 10 – Observability)
+#
+# This ConfigMap is picked up automatically by the Grafana sidecar because it
+# carries the label  grafana_dashboard: "1"  (set in values-prometheus.yaml).
+#
+# Apply BEFORE helm install/upgrade:
+#   kubectl apply -f monitoring/dashboard-configmap.yaml
+#
+# Panels:
+#   1. Pod Availability  – is at least 1 engine pod Running?
+#   2. Pod Restarts      – restart counter (rising = crash-loop warning)
+#   3. CPU Usage         – engine container CPU (millicores)
+#   4. Memory Usage      – engine container RSS memory (MB)
+#   5. Network I/O       – receive + transmit bytes/s at the pod level
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: seyoawe-overview-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  seyoawe-overview.json: |
+    {
+      "__inputs": [],
+      "__requires": [
+        { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+        { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+      ],
+      "annotations": { "list": [] },
+      "description": "seyoawe engine – pod-level observability (Phase 10)",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "id": 1,
+          "title": "Pod Availability",
+          "description": "Number of seyoawe-engine pods in Running phase. Should be ≥1.",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "red", "value": 0 },
+                  { "color": "green", "value": 1 }
+                ]
+              },
+              "unit": "short",
+              "mappings": []
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "count(kube_pod_status_phase{namespace=\"default\", pod=~\"seyoawe-engine.*\", phase=\"Running\"}) or vector(0)",
+              "legendFormat": "Running pods",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Pod Restarts (total)",
+          "description": "Container restart counter. A rising value means crash-loops — investigate logs.",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 3 },
+                  { "color": "red", "value": 10 }
+                ]
+              },
+              "unit": "short",
+              "mappings": []
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"default\", pod=~\"seyoawe-engine.*\"}) or vector(0)",
+              "legendFormat": "Restarts",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "CPU Usage (millicores)",
+          "description": "CPU consumed by seyoawe-engine containers. 1000m = 1 vCPU.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "options": {
+            "tooltip": { "mode": "multi", "sort": "none" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              },
+              "unit": "short",
+              "min": 0
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"default\", pod=~\"seyoawe-engine.*\", container!=\"\", container!=\"POD\"}[5m])) * 1000",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Memory Usage (MB)",
+          "description": "Working-set memory for each engine pod. Steady growth = memory leak.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "options": {
+            "tooltip": { "mode": "multi", "sort": "none" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              },
+              "unit": "decmbytes",
+              "min": 0
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"default\", pod=~\"seyoawe-engine.*\", container!=\"\", container!=\"POD\"}) / 1024 / 1024",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Network I/O (bytes/s)",
+          "description": "Pod-level network traffic. Receive = inbound API calls; Transmit = outbound (modules calling Slack/email/etc).",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "options": {
+            "tooltip": { "mode": "multi", "sort": "none" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              },
+              "unit": "Bps",
+              "min": 0
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_network_receive_bytes_total{namespace=\"default\", pod=~\"seyoawe-engine.*\"}[5m]))",
+              "legendFormat": "RX – {{pod}}",
+              "refId": "A"
+            },
+            {
+              "expr": "sum by (pod) (rate(container_network_transmit_bytes_total{namespace=\"default\", pod=~\"seyoawe-engine.*\"}[5m]))",
+              "legendFormat": "TX – {{pod}}",
+              "refId": "B"
+            }
+          ]
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 38,
+      "tags": ["seyoawe", "devops-final", "phase10"],
+      "templating": {
+        "list": [
+          {
+            "current": {},
+            "hide": 0,
+            "includeAll": false,
+            "name": "datasource",
+            "options": [],
+            "query": "prometheus",
+            "refresh": 1,
+            "type": "datasource",
+            "label": "Datasource"
+          }
+        ]
+      },
+      "time": { "from": "now-1h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "seyoawe Engine – Overview",
+      "uid": "seyoawe-overview-v1",
+      "version": 1
+    }

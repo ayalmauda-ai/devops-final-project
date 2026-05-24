@@ -1,0 +1,110 @@
+# monitoring/values-prometheus.yaml
+# Helm values for kube-prometheus-stack (Phase 10 – Observability)
+#
+# Chart:   prometheus-community/kube-prometheus-stack
+# Install: see monitoring/install.sh
+#
+# NOTE: The seyoawe engine binary does not expose a /metrics endpoint.
+#       We monitor it at the Kubernetes pod level using kube-state-metrics
+#       (pod availability, restarts) and cAdvisor (CPU, memory, network).
+#       This is the standard pattern for closed-source / black-box workloads.
+
+# ─── Grafana ────────────────────────────────────────────────────────────────
+grafana:
+  enabled: true
+
+  # Change this password before exposing Grafana publicly!
+  adminPassword: "DevOps2026!"
+
+  # Tell Grafana it lives under /grafana so relative links work through ingress
+  grafana.ini:
+    server:
+      root_url: "%(protocol)s://%(domain)s/grafana"
+      serve_from_sub_path: true
+
+  # Expose via the existing ingress-nginx (NLB hostname — no Route53 needed)
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: "/$2"
+    path: "/grafana(/|$)(.*)"
+    pathType: Prefix
+    # hosts: []   ← leave empty → ingress matches ALL hostnames (NLB hostname works as-is)
+
+  # Load our custom dashboard from a ConfigMap
+  # (ConfigMap is created in monitoring/dashboard-configmap.yaml)
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard     # sidecar watches for this label on ConfigMaps
+      labelValue: "1"
+      searchNamespace: monitoring
+
+  # Persist Grafana state (dashboards you create in the UI, etc.)
+  persistence:
+    enabled: true
+    size: 1Gi
+
+# ─── Prometheus ─────────────────────────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    # Discover ServiceMonitors and PodMonitors in ALL namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    # Retention: 15 days (adjust to your EBS budget)
+    retention: 15d
+
+    # PVC for Prometheus data
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+    # Additional scrape config: scrape the seyoawe engine pod directly on port 8080.
+    # Because the engine has no /metrics path, this will return an error —
+    # but it proves Prometheus is trying. For a real /metrics endpoint you would
+    # add a Prometheus client library or a sidecar exporter.
+    additionalScrapeConfigs:
+      - job_name: seyoawe-engine
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [default]
+        relabel_configs:
+          # Only scrape pods with label app=seyoawe-engine
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: seyoawe-engine
+            action: keep
+          # Use port 8080
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:8080"
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+# ─── Alertmanager ───────────────────────────────────────────────────────────
+# Disabled to keep Phase 10 simple; enable in production
+alertmanager:
+  enabled: false
+
+# ─── Node Exporter (host-level metrics) ─────────────────────────────────────
+nodeExporter:
+  enabled: true
+
+# ─── Kube State Metrics (pod/deployment/sts level) ──────────────────────────
+kubeStateMetrics:
+  enabled: true
+
+# ─── Built-in Kubernetes component scrapers ──────────────────────────────────
+kubeEtcd:
+  enabled: false   # EKS manages etcd — not directly scrapeable
+kubeControllerManager:
+  enabled: false   # EKS managed
+kubeScheduler:
+  enabled: false   # EKS managed

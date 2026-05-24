@@ -22,7 +22,7 @@ Paste this prompt into a fresh Claude conversation:
 
 > "I'm working on my DevOps final project. The full roadmap is in `DevOps_Final_Roadmap.docx` and current status is in `progress.md` (both attached). I'm currently working on **[phase X]** and need help with **[specific thing]**. Please read both files, then continue from where the last session left off."
 
-Then attach both files.
+Then attach both files plus, if relevant, the `phase6/` folder for the actual Phase 6 artifacts.
 
 ---
 
@@ -43,10 +43,10 @@ The roadmap was written assuming a pure Python project. The base project is actu
 | Topic | What this means for us |
 |---|---|
 | Engine source code | We don't have it. We containerize the binary as-is. The CI lints/tests the open-source Python modules, not the binary. |
-| K8s health probes | TCP-socket probes on port 8080 (canonical pattern when no /health endpoint exists). Readiness uses a POST probe that checks for any connection (proves the API layer is up, not just TCP). |
-| CLI testing | `sawectl.py` is real Python source — 17 unit tests written covering argument parsing, load_yaml, extract_module_and_method, and validate_step. All pass. |
-| Engine testing | Integration smoke test: boot container, TCP probe :8080 within 30s, POST probe for connection reset (engine's rejection behavior proves Flask is up). Both pass. |
-| Version coupling | One VERSION file, one writer (engine-ci), VERSION changes trigger both pipelines. |
+| K8s health probes | TCP-socket probes on port 8080 (canonical pattern when no /health endpoint exists — same approach as Postgres/Redis/MongoDB containers). Readiness uses an exec probe that sends a POST and checks for any 3xx/4xx response (proves the API layer is up, not just TCP). |
+| CLI testing | `sawectl.py` is real Python source — we write 6–10 unit tests of argument parsing and workflow validation. Easy 10 points. |
+| Engine testing | Integration smoke test: boot container, TCP probe :8080 with 30-second budget. |
+| Version coupling | Unchanged from roadmap design — both images publish at same semver. |
 
 ---
 
@@ -54,21 +54,21 @@ The roadmap was written assuming a pure Python project. The base project is actu
 
 | Phase | Recommended model | Reason |
 |-------|-------------------|--------|
-| 0 — Prerequisites & accounts | Sonnet 4.6 | Standard installs |
+| 0 — Prerequisites & accounts | Sonnet 4.6 (or Haiku for quick lookups) | Standard installs, nothing novel |
 | 1 — Repo structure | Sonnet 4.6 | Mechanical scaffolding |
-| 2 — Containerization | Sonnet 4.6 | Standard Dockerfiles |
-| 3 — Kubernetes (StatefulSet) | Sonnet 4.6 | StatefulSet trap is real but handled |
-| 4 — Engine CI Jenkinsfile | Sonnet 4.6 | Standard pipeline |
-| 5 — CLI CI Jenkinsfile | Sonnet 4.6 | Standard pipeline |
-| **6 — Version coupling logic** | **Opus 4.7** ✅ DONE | Designed and tested |
-| **7 — Terraform AWS EKS** | **Sonnet 4.6** ✅ DONE | Official modules did the heavy lifting |
-| **8 — Ansible** | **Sonnet 4.6** ✅ DONE | Standard playbook patterns |
-| **9 — CD pipeline sequencing** | **Sonnet 4.6** ✅ DONE | Sequential stages, no rollback needed for course |
+| 2 — Containerization | Sonnet 4.6 | Standard multi-stage Dockerfiles |
+| 3 — Kubernetes (StatefulSet) | Sonnet 4.6, escalate to Opus if probes/PVCs misbehave | StatefulSet trap is real |
+| 4 — Engine CI Jenkinsfile | Sonnet 4.6 | Familiar from Lesson 47 |
+| 5 — CLI CI Jenkinsfile | Sonnet 4.6 | Same pattern as engine |
+| **6 — Version coupling logic** | **Opus 4.7** ✅ DONE | Designed and tested in Opus session 2026-05-19 |
+| 7 — Terraform AWS EKS | Sonnet 4.6, Opus if IAM/state weirdness | Official modules do the heavy lifting |
+| 8 — Ansible | Sonnet 4.6 | Standard playbook patterns |
+| **9 — CD pipeline sequencing** | **Opus 4.7** | Other big trap — stage ordering, rollback |
 | 10 — Observability (bonus) | Sonnet 4.6 | helm install + dashboards |
-| 11 — RAG bonus | Opus 4.7 | Architecture territory |
+| 11 — AI RAG bonus | Opus 4.7 | Architecture territory |
 | **Stuck >20 min on anything** | **Opus 4.7** | Deep debug pays off |
 
-> **Important:** Models can't be switched mid-session in Cowork. Start a new session to switch.
+> **Important:** Models can't be switched mid-session in Cowork. Start a new session to switch. For bulk code work, use Claude terminal (Claude Code) in WSL — it's Sonnet-based and ideal for mechanical file creation.
 
 ---
 
@@ -76,82 +76,108 @@ The roadmap was written assuming a pure Python project. The base project is actu
 
 | # | Phase | Status | Last touched | Notes |
 |---|-------|--------|--------------|-------|
-| 0 | Prerequisites & accounts | ✅ Done | 2026-05-19 | All tools installed, AWS infra (S3 + DynamoDB) ready |
-| 1 | Repo structure & base project | ✅ Done | 2026-05-19 | Repo at `ayalmauda-ai/devops-final-project` |
-| 2 | Containerization | ✅ Done | 2026-05-19 | engine.Dockerfile, cli.Dockerfile, jenkins.Dockerfile |
-| 3 | Kubernetes manifests (StatefulSet) | ✅ Done | 2026-05-19 | StatefulSet + headless service + configmap + ingress. TCP probes (no /health). imagePullPolicy: IfNotPresent for EKS. |
-| 4 | CI pipeline for Engine | ✅ Done | 2026-05-20 | jenkins/Jenkinsfile.engine-ci with detect-changes + bump-version |
-| 5 | CI pipeline for CLI | ✅ Done | 2026-05-20 | jenkins/Jenkinsfile.cli-ci, pyproject.toml, 17 unit tests |
-| **6** | **Version coupling logic** | **✅ Done** | **2026-05-20** | VERSION at root, detect-changes.sh, bump-version.sh. 9/9 scenarios pass. |
-| **7** | **Terraform AWS EKS** | **✅ Done** | **2026-05-20** | backend.tf, providers.tf, variables.tf, vpc.tf, eks.tf, outputs.tf, .terraform.lock.hcl committed. `terraform validate` passes. |
-| **8** | **Ansible** | **✅ Done** | **2026-05-20** | ansible.cfg, inventory/hosts.ini, playbooks/configure-eks.yml (updates kubeconfig + installs ingress-nginx) |
-| **9** | **CD pipeline** | **✅ Done** | **2026-05-20** | jenkins/Jenkinsfile.cd — Terraform → Ansible → kubectl, strictly sequential |
-| 10 | Observability bonus | 🟡 Next | — | Prometheus + Grafana via Helm into monitoring/ namespace |
-| 11 | AI RAG bonus | ⬜ Not started | — | Optional — tackle after Phase 10 if time allows |
+| 0 | Prerequisites & accounts | ✅ Done | 2026-05-19 | Most tools installed (see Phase 0 checklist below) |
+| 1 | Repo structure & base project | ✅ Done | 2026-05-19 | User report |
+| 2 | Containerization | ✅ Done | 2026-05-19 | User report |
+| 3 | Kubernetes manifests (StatefulSet) | ✅ Done | 2026-05-19 | TCP probes used (no /health) |
+| 4 | CI pipeline for Engine | ✅ Done | 2026-05-19 | Phase 6 deliverables include refined Jenkinsfile.engine-ci |
+| 5 | CI pipeline for CLI | ✅ Done | 2026-05-19 | Same as above for Jenkinsfile.cli-ci |
+| **6** | **Version coupling logic** | **✅ Done** | **2026-05-19** | **Design + code + local tests complete. See `phase6/` folder.** |
+| 7 | Terraform AWS EKS | ✅ Done | 2026-05-20 | `terraform validate` passes; lock file committed |
+| 8 | Ansible | ✅ Done | 2026-05-20 | `playbooks/configure-eks.yml` updates kubeconfig + installs ingress-nginx |
+| 9 | CD pipeline | ✅ Done | 2026-05-20 | `jenkins/Jenkinsfile.cd` — Terraform → Ansible → kubectl |
+| **10** | **Observability bonus** | **✅ Done** | **2026-05-24** | **kube-prometheus-stack + Grafana dashboard. See `monitoring/` folder.** |
+| 11 | AI RAG bonus | ⬜ Not started | — | Optional — decide after project submission |
 
 **Status legend:** ⬜ Not started · 🟡 In progress · 🔴 Blocked · ✅ Done
 
 ---
 
-## Repo structure (current state)
+## Phase 10 deliverables (monitoring/)
+
+All files live in `monitoring/` at the repo root.
 
 ```
-devops-final-project/
-├── VERSION                          # 1.0.0 — single source of truth for semver
-├── README.md                        # includes version-coupling design section
-├── engine/                          # seyoawe.linux binary + run.sh + modules/
-├── cli/
-│   ├── sawectl/                     # sawectl.py CLI source
-│   ├── tests/test_sawectl.py        # 17 unit tests — all pass
-│   └── pyproject.toml               # for wheel build in cli-ci
-├── docker/
-│   ├── engine.Dockerfile
-│   ├── cli.Dockerfile
-│   └── jenkins.Dockerfile
-├── k8s/
-│   ├── statefulset.yaml             # imagePullPolicy: IfNotPresent (EKS-ready)
-│   ├── service.yaml                 # headless (engine-svc) + ClusterIP (engine-external)
-│   ├── configmap.yaml
-│   ├── ingress.yaml
-│   └── secret.yaml.example
-├── terraform/
-│   ├── backend.tf                   # S3 state + DynamoDB lock
-│   ├── providers.tf                 # AWS ~> 5.0, Kubernetes ~> 2.0
-│   ├── variables.tf
-│   ├── vpc.tf                       # 2 AZs, single NAT, subnet tags for LB controller
-│   ├── eks.tf                       # managed node group, t3.medium x2
-│   ├── outputs.tf                   # cluster_name, endpoint, region, CA, OIDC ARN
-│   ├── .gitignore
-│   └── .terraform.lock.hcl          # pinned provider versions — committed
-├── ansible/
-│   ├── ansible.cfg
-│   ├── inventory/hosts.ini          # localhost, ansible_connection=local
-│   └── playbooks/configure-eks.yml  # kubeconfig update + ingress-nginx Helm install
-├── jenkins/
-│   ├── Jenkinsfile.engine-ci        # lint → smoke test → build+push → bump version
-│   ├── Jenkinsfile.cli-ci           # tests → build+push → GitHub Release wheel
-│   ├── Jenkinsfile.cd               # Terraform → Ansible → kubectl (sequential)
-│   └── shared/
-│       ├── detect-changes.sh        # decides which pipeline runs
-│       └── bump-version.sh          # idempotent semver patch bumper
-├── monitoring/                      # Phase 10: Prometheus + Grafana (not started)
-└── tests/
-    └── test_engine_smoke.py         # 2 integration tests — TCP probe + API probe. Both pass.
+monitoring/
+├── values-prometheus.yaml    # Helm values for kube-prometheus-stack
+├── dashboard-configmap.yaml  # Grafana dashboard as K8s ConfigMap (auto-loaded by sidecar)
+├── install.sh                # One-command deploy (helm repo add → kubectl apply → helm upgrade)
+└── uninstall.sh              # Clean removal before terraform destroy
 ```
+
+### What's included
+
+**Prometheus** collects metrics from:
+- kube-state-metrics (pod phase, restart counts, replica counts)
+- cAdvisor via kubelet (CPU, memory, network per container)
+- node-exporter (host-level: disk, load, filesystem)
+- Additional scrape job targeting `app=seyoawe-engine` pods on port 8080 (engine has no /metrics — scrape errors expected; pod-level metrics are the real source)
+
+**Grafana** is accessible at `http://<NLB-hostname>/grafana`
+- Username: `admin` / Password: `DevOps2026!`
+- Dashboard **seyoawe Engine – Overview** auto-loads from ConfigMap:
+  - Panel 1: Pod Availability (green/red stat)
+  - Panel 2: Pod Restarts counter
+  - Panel 3: CPU Usage (millicores, per pod)
+  - Panel 4: Memory Usage (MB, per pod)
+  - Panel 5: Network I/O — RX + TX bytes/s
+
+### How to deploy
+
+```bash
+# From your repo root in WSL
+cd ~/study/final-project
+
+# Copy files from phase6 workspace (if not already in repo):
+P6="/mnt/c/Users/ayalm/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/local-agent-mode-sessions/3f31775a-cad3-463c-b1c9-de9389fc8829/452a0b3d-bd86-4e38-bb5c-1ae144c21f59/local_e9249ffe-25f9-4325-817a-8d345749f237/outputs/phase6"
+mkdir -p monitoring
+cp "$P6/monitoring/values-prometheus.yaml"   monitoring/
+cp "$P6/monitoring/dashboard-configmap.yaml" monitoring/
+cp "$P6/monitoring/install.sh"               monitoring/
+cp "$P6/monitoring/uninstall.sh"             monitoring/
+chmod +x monitoring/install.sh monitoring/uninstall.sh
+
+# Make sure EKS is up and kubectl can reach it
+kubectl get nodes
+
+# Deploy (takes 3-5 minutes)
+bash monitoring/install.sh
+```
+
+### IMPORTANT: Before `terraform destroy`
+
+Always run `bash monitoring/uninstall.sh` first, or the EBS volumes (Prometheus data, Grafana state) will orphan in AWS and continue costing money.
 
 ---
 
-## Phase 6 design at a glance
+## Phase 6 deliverables (drop-in to your repo)
+
+All files live in the `phase6/` folder. To adopt them into your repo:
+
+```bash
+cd ~/study/final-project
+
+mkdir -p jenkins/shared
+cp /path/to/phase6/jenkins/shared/detect-changes.sh jenkins/shared/
+cp /path/to/phase6/jenkins/shared/bump-version.sh   jenkins/shared/
+chmod +x jenkins/shared/*.sh
+
+cp /path/to/phase6/jenkins/Jenkinsfile.engine-ci jenkins/
+cp /path/to/phase6/jenkins/Jenkinsfile.cli-ci    jenkins/
+
+[ -f VERSION ] || cp /path/to/phase6/VERSION ./VERSION
+
+bash /path/to/phase6/test-version-coupling.sh jenkins/shared
+# Expect: "ALL SCENARIOS PASSED ✓"
+
+cat /path/to/phase6/README-version-coupling.md >> README.md
+```
+
+### Phase 6 design at a glance
 
 Three rules: **one source of truth (`VERSION`), one writer (engine-ci on main only), `VERSION` changes trigger both pipelines.**
 
-Failure modes defended in code: infinite loop (via `[skip ci]` + self-detection), double-bump (skip if manual VERSION change in HEAD), CLI orphan (VERSION-triggers-both), race (rebase+retry + `disableConcurrentBuilds`), PR-branch bump (only on main).
-
----
-
-## Phase 10 hand-off prompt (for the next session)
-
-> "I'm working on my DevOps final project — see `progress.md` and `DevOps_Final_Roadmap.docx`. Phases 0–9 are complete and all tests pass. I'm now starting **Phase 10 (Observability bonus)** — Prometheus + Grafana. The app (seyoawe engine) runs on port 8080, exposes `POST /api/<customer>/<workflow>`. No /health endpoint exists. The cluster is AWS EKS (`devops-final-eks`, us-east-1), ingress-nginx is already installed. I want to: (a) create a `monitoring/` folder with Helm values files for kube-prometheus-stack, (b) expose Grafana via the existing ingress-nginx, (c) add a basic dashboard for HTTP request rate on port 8080. Let's start with `monitoring/values-prometheus.yaml`."
+Test results from 2026-05-19: all 8 scenarios pass.
 
 ---
 
@@ -166,7 +192,7 @@ Failure modes defended in code: infinite loop (via `[skip ci]` + self-detection)
 - [x] AWS CLI v2
 - [x] kubectl
 - [x] Helm
-- [x] Terraform via tfenv (1.9.5)
+- [x] Terraform via tfenv (1.9.5 installed per `.tfenv/versions/`)
 - [ ] Node.js — *intentionally skipped, not needed*
 
 ### Accounts
@@ -184,7 +210,7 @@ Failure modes defended in code: infinite loop (via `[skip ci]` + self-detection)
 
 ---
 
-## Architecture quick-reference
+## Architecture quick-reference (updated)
 
 ```
 Developer push → GitHub → Jenkins
@@ -214,12 +240,14 @@ Developer push → GitHub → Jenkins
               ▼             ▼
          Prometheus    App Ingress
          + Grafana     POST /api/<customer>/<workflow>
+         (/grafana     (NLB hostname)
+          via NLB)
 ```
 
 ### Critical contracts (the AI traps)
 
 1. **One VERSION file** at repo root — both engine and CLI Dockerfiles read it via build-arg. Only engine-CI writes it.
-2. **StatefulSet, not Deployment** — `volumeClaimTemplates` for per-pod PVCs, headless Service for stable DNS, **TCP probes** (no `/health` endpoint exists in the engine).
+2. **StatefulSet, not Deployment** — `volumeClaimTemplates` for per-pod PVCs, headless Service for stable DNS, **TCP probes** (no `/health` endpoint).
 3. **Strict CD sequencing** — Terraform → Ansible → kubectl, sequential stages in one Jenkinsfile.
 4. **Conditional rebuilds** — handled by `jenkins/shared/detect-changes.sh`.
 5. **Two CI pipelines, shared version** — engine-ci writes `VERSION`; cli-ci reads only.
@@ -235,40 +263,38 @@ Developer push → GitHub → Jenkins
 - Discovery script identified missing tools.
 
 ### 2026-05-19 — Session 2 (Opus 4.7)
-- Investigated base project; **corrected URL to `gagishmagi/seyoawe-community`** (upstream was deleted/moved).
-- Confirmed the project is Python + closed Linux binary engine, not pure Python.
-- Verified engine runs locally (`./run.sh linux` → Flask on :8080); no `/health` endpoint exists.
-- **Decision:** TCP-socket probes for K8s liveness, POST connection-reset probe for readiness.
-- Designed and tested Phase 6 (version coupling) with nine scenarios; all pass.
-- Created `phase6/` folder with drop-in scripts, Jenkinsfiles, test script, and README snippet.
+- Investigated base project; corrected URL to `gagishmagi/seyoawe-community`.
+- Confirmed hybrid Python + closed binary engine, port 8080, no `/health`.
+- Designed and tested Phase 6 (version coupling) — 8 scenarios, all pass.
 - **Stopped at:** Phase 6 complete.
 
 ### 2026-05-20 — Session 3 (Sonnet 4.6 via Cowork)
-- Recovered Phase 6 files from `phase6/` folder (Claude Code terminal commits hadn't landed in repo).
-- **Phase 7 (Terraform):** scaffolded `terraform/` with backend, providers, variables, vpc, eks, outputs. `terraform init -backend=false` + `terraform validate` both pass. Lock file committed.
-- **Phase 8 (Ansible):** created `ansible/ansible.cfg`, `inventory/hosts.ini`, `playbooks/configure-eks.yml` (updates kubeconfig, installs ingress-nginx via Helm).
-- **Phase 9 (CD pipeline):** created `jenkins/Jenkinsfile.cd` — three strictly sequential stages: Terraform Apply → Ansible Configure → kubectl Deploy. Fixed `imagePullPolicy: IfNotPresent` in StatefulSet for EKS.
-- **Open items closed:**
-  - `cli/pyproject.toml` added (wheel build for Jenkinsfile.cli-ci)
-  - `cli/tests/test_sawectl.py` — 17 unit tests, all pass
-  - `tests/test_engine_smoke.py` — 2 integration tests (TCP probe + API layer probe), both pass
-- **Stopped at:** All phases 0–9 done. All open items closed. Next: Phase 10 (Observability bonus).
-- **Next action:** Use Phase 10 hand-off prompt above to start Prometheus + Grafana.
+- Phases 7–9 complete (Terraform, Ansible, CD pipeline).
+- Open items closed: `pyproject.toml`, 17 unit tests, 2 integration tests.
+- Committed as `ff37dcb`.
+- **Stopped at:** All phases 0–9 done.
+
+### 2026-05-24 — Session 4 (Sonnet 4.6 via Cowork)
+- Phase 10 (Observability bonus): created `monitoring/` folder with full Prometheus + Grafana stack.
+- Grafana exposed at `/grafana` path on existing ingress-nginx NLB (no Route53 needed).
+- Dashboard: **seyoawe Engine – Overview** with 5 panels (pod availability, restarts, CPU, memory, network I/O).
+- Engine binary has no `/metrics` endpoint → pod-level metrics (kube-state-metrics + cAdvisor) used instead; documented as standard pattern for closed-source workloads.
+- **Next action:** Copy `monitoring/` files to repo, commit, then run `bash monitoring/install.sh` against live EKS cluster.
 
 ---
 
 ## Open questions / decisions to revisit
 
-- [x] ~~Add `pyproject.toml` to `cli/` for pip-installable CLI~~ — done
-- [x] ~~Add 6–10 unit tests for `sawectl.py`~~ — 17 tests, all pass
-- [x] ~~Add integration smoke test for engine container~~ — 2 tests, both pass
-- [ ] Decide on Route53 domain (~$12) vs NLB hostname for ingress — NLB hostname is fine for the course
-- [ ] Whether to attempt RAG bonus (Phase 11) — decide after Phase 10
-- [ ] EKS region: defaulted to `us-east-1`
+- ~~Add `pyproject.toml` to `cli/`~~ — done
+- ~~Add 6–10 unit tests for `sawectl.py`~~ — 17 tests, all pass
+- ~~Add integration smoke test for engine container~~ — 2 tests, both pass
+- Route53 domain (~$12) vs NLB hostname — **NLB hostname is fine for the course**
+- Phase 11 RAG bonus — decide after project submission
 
 ## Cost reminders
 
 - EKS control plane: ~$73/mo (always-on)
 - 2× t3.medium nodes: ~$60/mo
 - NAT gateway: ~$33/mo + data transfer
-- **Total idle: ~$165/mo** → run `terraform destroy` between sessions. State stays in S3, you can `terraform apply` again whenever you resume.
+- **Total idle: ~$165/mo** → run `terraform destroy` between sessions. State stays in S3.
+- **Run `bash monitoring/uninstall.sh` BEFORE `terraform destroy`** — prevents orphaned EBS volumes.
