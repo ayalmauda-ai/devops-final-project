@@ -214,7 +214,7 @@ Or use Postman — set method to POST and hit the same URL.
 
 ```bash
 docker pull ayalm/cli:1.0.0
-docker run --rm ayalm/cli:1.0.0 sawectl --help
+docker run --rm ayalm/cli:1.0.0 --help
 ```
 
 **Run on a local Kubernetes cluster (Minikube):**
