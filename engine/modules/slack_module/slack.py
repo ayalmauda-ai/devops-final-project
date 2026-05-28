@@ -138,3 +138,4 @@ class Slack:
             "bad": "#ff0000",
             "neutral": "#cccccc",
         }.get(str(severity).lower(), "#cccccc")
+# pipeline trigger test
