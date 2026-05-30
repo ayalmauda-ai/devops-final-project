@@ -140,3 +140,4 @@ class Slack:
         }.get(str(severity).lower(), "#cccccc")
 # pipeline trigger test
 # v2 test
+# v3 test
