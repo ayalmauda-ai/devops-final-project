@@ -91,10 +91,10 @@ pipeline {
     stage('Build wheel') {
       steps {
         sh '''
-          python3 -m pip install --quiet --user --break-system-packages build
+          python3 -m pip install --quiet --user --break-system-packages build setuptools wheel
           export PATH="$HOME/.local/bin:$PATH"
           cd cli
-          python3 -m build --wheel --outdir dist
+          python3 -m build --wheel --no-isolation --outdir dist
           ls -la dist/
         '''
         archiveArtifacts artifacts: 'cli/dist/*.whl', fingerprint: true
