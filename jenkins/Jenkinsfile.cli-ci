@@ -71,7 +71,7 @@ pipeline {
     stage('Lint + Test CLI') {
       steps {
         sh '''
-          python3 -m pip install --quiet --user \
+          python3 -m pip install --quiet --user --break-system-packages \
             ruff==0.5.5 pytest pytest-cov pyyaml jsonschema requests
           export PATH="$HOME/.local/bin:$PATH"
 
@@ -91,7 +91,7 @@ pipeline {
     stage('Build wheel') {
       steps {
         sh '''
-          python3 -m pip install --quiet --user build
+          python3 -m pip install --quiet --user --break-system-packages build
           export PATH="$HOME/.local/bin:$PATH"
           cd cli
           python3 -m build --wheel --outdir dist
